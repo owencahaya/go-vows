@@ -62,10 +62,6 @@ CREATE TABLE `invitations` (
   `event_choice` varchar(30) DEFAULT NULL,
   `gift_interest` varchar(30) NOT NULL DEFAULT 'not_asked',
   `qr_code_token` varchar(150) NOT NULL,
-  `qr_whatsapp_media_id` varchar(255) DEFAULT NULL,
-  `qr_media_uploaded_at` datetime DEFAULT NULL,
-  `qr_sent_at` datetime DEFAULT NULL,
-  `qr_status` varchar(30) NOT NULL DEFAULT 'not_generated',
   `created_at` datetime(3) DEFAULT NULL,
   `updated_at` datetime(3) DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -76,7 +72,6 @@ CREATE TABLE `invitations` (
   KEY `idx_invitations_invitation_status` (`invitation_status`),
   KEY `idx_invitations_rsvp_status` (`rsvp_status`),
   KEY `idx_invitations_event_choice` (`event_choice`),
-  KEY `idx_invitations_qr_status` (`qr_status`),
   CONSTRAINT `fk_events_invitations` FOREIGN KEY (`event_id`) REFERENCES `events` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;

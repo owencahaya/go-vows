@@ -59,6 +59,28 @@ func (r *InvitationRepository) FindByQRToken(token string) (*models.Invitation, 
 	return &inv, nil
 }
 
+// FindByWhatsappNumber resolves an invitation by the guest's WhatsApp number.
+// It tolerates the number being stored with or without a leading "+".
+func (r *InvitationRepository) FindByWhatsappNumber(number string) (*models.Invitation, error) {
+	alt := number
+	if len(number) > 0 && number[0] == '+' {
+		alt = number[1:]
+	} else {
+		alt = "+" + number
+	}
+	var inv models.Invitation
+	err := r.db.Preload("Event").
+		Where("whatsapp_number IN ?", []string{number, alt}).
+		First(&inv).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &inv, nil
+}
+
 // List applies the optional filters and returns matching invitations.
 func (r *InvitationRepository) List(f dto.InvitationFilter) ([]models.Invitation, error) {
 	q := r.db.Preload("Event").Model(&models.Invitation{})
@@ -75,9 +97,6 @@ func (r *InvitationRepository) List(f dto.InvitationFilter) ([]models.Invitation
 	}
 	if f.InvitationStatus != "" {
 		q = q.Where("invitations.invitation_status = ?", f.InvitationStatus)
-	}
-	if f.QRStatus != "" {
-		q = q.Where("invitations.qr_status = ?", f.QRStatus)
 	}
 
 	var invs []models.Invitation
@@ -106,7 +125,9 @@ func (r *InvitationRepository) FindAttendingByTag(tag string) ([]models.Invitati
 	})
 }
 
-// FindQRReadyByTag returns invitations eligible for QR generation/sending.
+// FindQRReadyByTag returns invitations eligible for QR generation/sending:
+// attending guests with a known pax count and event choice. QR delivery is
+// stateless, so there is no "already sent" gate — each call sends a fresh QR.
 func (r *InvitationRepository) FindQRReadyByTag(tag string) ([]models.Invitation, error) {
 	var invs []models.Invitation
 	err := r.db.Preload("Event").
@@ -115,7 +136,6 @@ func (r *InvitationRepository) FindQRReadyByTag(tag string) ([]models.Invitation
 		Where("invitations.rsvp_status = ?", models.RSVPAttending).
 		Where("invitations.pax_count IS NOT NULL").
 		Where("invitations.event_choice IS NOT NULL").
-		Where("invitations.qr_sent_at IS NULL").
 		Find(&invs).Error
 	return invs, err
 }

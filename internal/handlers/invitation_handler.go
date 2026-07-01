@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -134,6 +135,23 @@ func (h *InvitationHandler) ResendQR(c *gin.Context) {
 		return
 	}
 	utils.Success(c, http.StatusOK, "QR resend processed", summary)
+}
+
+// GET /qr/:qr_code_token
+// Serves the QR PNG publicly so Twilio can fetch it as message media.
+// Accepts an optional ".png" suffix on the token for a friendly URL/extension.
+func (h *InvitationHandler) QRImage(c *gin.Context) {
+	token := strings.TrimSuffix(c.Param("qr_code_token"), ".png")
+	png, err := h.svc.QRImageByToken(token)
+	if err != nil {
+		if errors.Is(err, repositories.ErrNotFound) {
+			utils.Error(c, http.StatusNotFound, "invitation_not_found", "invitation not found")
+			return
+		}
+		utils.InternalError(c, err)
+		return
+	}
+	c.Data(http.StatusOK, "image/png", png)
 }
 
 // runTagBatch parses a {tag} body and runs the given batch function.

@@ -34,15 +34,14 @@ func main() {
 	logRepo := repositories.NewWhatsappLogRepository(db)
 	checkinRepo := repositories.NewCheckinLogRepository(db)
 
-	// External-service stubs
+	// External services
 	whatsappSvc := services.NewWhatsappService(cfg)
-	mediaSvc := services.NewMetaMediaService(cfg)
 	qrSvc := services.NewQRService(cfg)
 
 	// Domain services
 	eventSvc := services.NewEventService(eventRepo)
 	csvSvc := services.NewCSVService(db, eventRepo)
-	invSvc := services.NewInvitationService(invRepo, logRepo, whatsappSvc, mediaSvc, qrSvc)
+	invSvc := services.NewInvitationService(invRepo, logRepo, whatsappSvc, qrSvc)
 	checkinSvc := services.NewCheckinService(invRepo, checkinRepo)
 	webhookSvc := services.NewWebhookService(cfg, invRepo, logRepo, whatsappSvc, invSvc)
 

@@ -18,11 +18,19 @@ type Config struct {
 	DBUser     string
 	DBPassword string
 
-	// Meta WhatsApp
-	MetaAccessToken   string
-	MetaPhoneNumberID string
-	MetaVerifyToken   string
-	MetaAPIVersion    string
+	// Twilio WhatsApp
+	TwilioAccountSID     string
+	TwilioAuthToken      string
+	TwilioWhatsAppNumber string // sender, e.g. whatsapp:+14155238886
+
+	// Optional approved Content Template SIDs (business-initiated messages).
+	// When empty, the corresponding message is sent as freeform Body text.
+	TwilioContentSidInvitation string
+	TwilioContentSidReminder   string
+	TwilioContentSidQR         string
+
+	// Optional public URL Twilio calls back with delivery/status updates.
+	TwilioStatusCallbackURL string
 }
 
 // Load reads configuration from environment variables, applying sensible
@@ -38,10 +46,15 @@ func Load() *Config {
 		DBUser:     getEnv("DB_USER", "root"),
 		DBPassword: getEnv("DB_PASSWORD", "password"),
 
-		MetaAccessToken:   getEnv("META_ACCESS_TOKEN", ""),
-		MetaPhoneNumberID: getEnv("META_PHONE_NUMBER_ID", ""),
-		MetaVerifyToken:   getEnv("META_VERIFY_TOKEN", ""),
-		MetaAPIVersion:    getEnv("META_API_VERSION", "v20.0"),
+		TwilioAccountSID:     getEnv("TWILIO_ACCOUNT_SID", ""),
+		TwilioAuthToken:      getEnv("TWILIO_AUTH_TOKEN", ""),
+		TwilioWhatsAppNumber: getEnv("TWILIO_WHATSAPP_NUMBER", ""),
+
+		TwilioContentSidInvitation: getEnv("TWILIO_CONTENT_SID_INVITATION", ""),
+		TwilioContentSidReminder:   getEnv("TWILIO_CONTENT_SID_REMINDER", ""),
+		TwilioContentSidQR:         getEnv("TWILIO_CONTENT_SID_QR", ""),
+
+		TwilioStatusCallbackURL: getEnv("TWILIO_STATUS_CALLBACK_URL", ""),
 	}
 }
 

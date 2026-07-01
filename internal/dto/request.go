@@ -20,7 +20,6 @@ type InvitationFilter struct {
 	EventID          uint64 `form:"event_id"`
 	RSVPStatus       string `form:"rsvp_status"`
 	InvitationStatus string `form:"invitation_status"`
-	QRStatus         string `form:"qr_status"`
 }
 
 // SendInvitationsRequest is the body for POST /api/invitations/send.

@@ -15,7 +15,6 @@ type InvitationService struct {
 	invRepo  *repositories.InvitationRepository
 	logRepo  *repositories.WhatsappLogRepository
 	whatsapp WhatsappService
-	media    MetaMediaService
 	qr       QRService
 }
 
@@ -23,14 +22,12 @@ func NewInvitationService(
 	invRepo *repositories.InvitationRepository,
 	logRepo *repositories.WhatsappLogRepository,
 	whatsapp WhatsappService,
-	media MetaMediaService,
 	qr QRService,
 ) *InvitationService {
 	return &InvitationService{
 		invRepo:  invRepo,
 		logRepo:  logRepo,
 		whatsapp: whatsapp,
-		media:    media,
 		qr:       qr,
 	}
 }
@@ -41,6 +38,16 @@ func (s *InvitationService) List(f dto.InvitationFilter) ([]models.Invitation, e
 
 func (s *InvitationService) GetByID(id uint64) (*models.Invitation, error) {
 	return s.invRepo.FindByID(id)
+}
+
+// QRImageByToken renders the QR PNG for the invitation identified by qrToken.
+// This backs the public /qr endpoint that Twilio fetches as message media.
+func (s *InvitationService) QRImageByToken(qrToken string) ([]byte, error) {
+	inv, err := s.invRepo.FindByQRToken(qrToken)
+	if err != nil {
+		return nil, err
+	}
+	return s.qr.Generate(s.qr.CheckinURL(inv.QRCodeToken))
 }
 
 // SendByIDs sends the initial invitation to the given invitation ids.
@@ -105,7 +112,8 @@ func (s *InvitationService) sendInvitationBatch(invs []models.Invitation, msgTyp
 	return summary
 }
 
-// GenerateAndSendQR generates, uploads and sends QR codes for eligible guests.
+// GenerateAndSendQR generates QR codes in memory and sends them to eligible
+// guests. Nothing is stored: no file, no upload, no QR metadata persisted.
 func (s *InvitationService) GenerateAndSendQR(tag string) (*dto.BatchSummary, error) {
 	invs, err := s.invRepo.FindQRReadyByTag(tag)
 	if err != nil {
@@ -119,7 +127,8 @@ func (s *InvitationService) GenerateAndSendQR(tag string) (*dto.BatchSummary, er
 	return summary, nil
 }
 
-// ResendQR resends QR to selected ids, regenerating media if missing.
+// ResendQR resends QR to selected ids. Every resend generates a fresh QR in
+// memory and sends it immediately; nothing is reused or persisted.
 func (s *InvitationService) ResendQR(tag string, ids []uint64) (*dto.BatchSummary, error) {
 	invs, err := s.invRepo.FindByIDs(ids)
 	if err != nil {
@@ -142,49 +151,24 @@ func (s *InvitationService) ResendQR(tag string, ids []uint64) (*dto.BatchSummar
 	return summary, nil
 }
 
-// processQR runs the full generate -> upload -> send pipeline for one invitation.
+// processQR generates a QR in memory and sends it immediately for one
+// invitation. No QR image or QR metadata is stored: the PNG is generated to
+// validate encoding (and served on demand by the /qr endpoint that Twilio
+// fetches), then discarded once this function returns.
 func (s *InvitationService) processQR(inv *models.Invitation, summary *dto.BatchSummary, msgType string) {
-	// 1. Ensure we have a Meta media id (generate + upload if missing).
-	if inv.QRWhatsappMediaID == nil || *inv.QRWhatsappMediaID == "" {
-		content := s.qr.CheckinURL(inv.QRCodeToken)
-		png, err := s.qr.Generate(content)
-		if err != nil {
-			s.failQR(inv, summary, "qr generation failed: "+err.Error())
-			return
-		}
-		mediaID, err := s.media.UploadImage(png, inv.QRCodeToken+".png")
-		if err != nil {
-			s.failQR(inv, summary, "media upload failed: "+err.Error())
-			return
-		}
-		now := time.Now()
-		inv.QRWhatsappMediaID = &mediaID
-		inv.QRMediaUploadedAt = &now
-		inv.QRStatus = models.QRStatusGenerated
-		_ = s.invRepo.Save(inv)
-	}
-
-	// 2. Send the QR message.
-	res := s.whatsapp.SendQR(inv, *inv.QRWhatsappMediaID)
-	s.logSend(inv, msgType, res)
-
-	if res.Err != nil {
-		inv.QRStatus = models.QRStatusSendFailed
-		_ = s.invRepo.Save(inv)
-		s.appendResult(summary, inv.ID, res.Err)
+	// Generate in memory to validate; the bytes are intentionally discarded.
+	if _, err := s.qr.Generate(s.qr.CheckinURL(inv.QRCodeToken)); err != nil {
+		s.failQR(inv, summary, "qr generation failed: "+err.Error())
 		return
 	}
 
-	now := time.Now()
-	inv.QRStatus = models.QRStatusSent
-	inv.QRSentAt = &now
-	_ = s.invRepo.Save(inv)
-	s.appendResult(summary, inv.ID, nil)
+	// Send using the public on-demand URL (Twilio fetches it as media).
+	res := s.whatsapp.SendQR(inv, s.qr.ImageURL(inv.QRCodeToken))
+	s.logSend(inv, msgType, res)
+	s.appendResult(summary, inv.ID, res.Err)
 }
 
 func (s *InvitationService) failQR(inv *models.Invitation, summary *dto.BatchSummary, reason string) {
-	inv.QRStatus = models.QRStatusSendFailed
-	_ = s.invRepo.Save(inv)
 	summary.Failed++
 	summary.Results = append(summary.Results, dto.BatchResult{ID: inv.ID, Success: false, Reason: reason})
 }

@@ -1,8 +1,11 @@
 package services
 
 import (
+	"net/url"
+	"strings"
 	"time"
 
+	twilioClient "github.com/twilio/twilio-go/client"
 	"gorm.io/datatypes"
 
 	"projectvows/internal/config"
@@ -10,15 +13,17 @@ import (
 	"projectvows/internal/repositories"
 )
 
-// WebhookService handles inbound WhatsApp webhook events and drives the
-// RSVP conversation flow. The actual Meta payload parsing is left as a TODO;
-// the building-block methods below are ready to be wired up.
+// WebhookService handles inbound Twilio WhatsApp webhooks: delivery/status
+// callbacks and inbound guest messages. Twilio posts application/x-www-form-
+// urlencoded payloads and authenticates them with an X-Twilio-Signature header
+// (there is no Meta-style GET verification handshake).
 type WebhookService struct {
-	cfg      *config.Config
-	invRepo  *repositories.InvitationRepository
-	logRepo  *repositories.WhatsappLogRepository
-	whatsapp WhatsappService
-	invSvc   *InvitationService
+	cfg       *config.Config
+	invRepo   *repositories.InvitationRepository
+	logRepo   *repositories.WhatsappLogRepository
+	whatsapp  WhatsappService
+	invSvc    *InvitationService
+	validator twilioClient.RequestValidator
 }
 
 func NewWebhookService(
@@ -29,42 +34,87 @@ func NewWebhookService(
 	invSvc *InvitationService,
 ) *WebhookService {
 	return &WebhookService{
-		cfg:      cfg,
-		invRepo:  invRepo,
-		logRepo:  logRepo,
-		whatsapp: whatsapp,
-		invSvc:   invSvc,
+		cfg:       cfg,
+		invRepo:   invRepo,
+		logRepo:   logRepo,
+		whatsapp:  whatsapp,
+		invSvc:    invSvc,
+		validator: twilioClient.NewRequestValidator(cfg.TwilioAuthToken),
 	}
 }
 
-// VerifyToken implements the Meta webhook verification handshake.
-// Returns the challenge string and true when the verify token matches.
-func (s *WebhookService) VerifyToken(mode, token, challenge string) (string, bool) {
-	if mode == "subscribe" && token == s.cfg.MetaVerifyToken && s.cfg.MetaVerifyToken != "" {
-		return challenge, true
+// ValidateSignature verifies the X-Twilio-Signature header for a POST webhook.
+// When no auth token is configured (e.g. local dev / sandbox), validation is
+// skipped and the request is accepted.
+func (s *WebhookService) ValidateSignature(fullURL string, form url.Values, signature string) bool {
+	if s.cfg.TwilioAuthToken == "" {
+		return true
 	}
-	return "", false
+	params := make(map[string]string, len(form))
+	for k := range form {
+		params[k] = form.Get(k)
+	}
+	return s.validator.Validate(fullURL, params, signature)
 }
 
-// HandleInbound processes a raw inbound webhook payload.
-//
-// TODO: Parse the actual Meta WhatsApp webhook structure:
-//
-//	entry[].changes[].value.messages[]  -> inbound messages
-//	  - type == "interactive" -> button_reply / list_reply ids encode the answer
-//	  - type == "text"        -> free text
-//	entry[].changes[].value.statuses[]  -> delivery/read receipts
-//	entry[].changes[].value.contacts[]  -> map wa_id to our whatsapp_number
-//
-// For now we store a generic inbound log if we can resolve an invitation by the
-// sender's whatsapp number, otherwise we simply persist nothing and return nil.
-func (s *WebhookService) HandleInbound(rawPayload []byte) error {
-	// TODO: extract sender wa_id + interactive reply id from rawPayload and
-	// route to the appropriate Update* method below. For now we record the raw
-	// payload as a generic "other" inbound log against invitation 0 is not
-	// possible (FK), so we no-op until parsing is implemented.
-	_ = rawPayload
-	return nil
+// HandleTwilioCallback routes a parsed Twilio webhook payload. A payload with a
+// MessageStatus field is a delivery/status callback; otherwise it is treated as
+// an inbound message from a guest.
+func (s *WebhookService) HandleTwilioCallback(form url.Values) error {
+	if status := form.Get("MessageStatus"); status != "" {
+		return s.handleStatusCallback(form.Get("MessageSid"), status)
+	}
+	return s.handleInboundMessage(form)
+}
+
+// handleStatusCallback maps Twilio's message status onto our whatsapp_logs
+// status column for the matching outbound log.
+func (s *WebhookService) handleStatusCallback(messageSid, twilioStatus string) error {
+	if messageSid == "" {
+		return nil
+	}
+	return s.logRepo.UpdateStatusByMessageID(messageSid, mapTwilioStatus(twilioStatus))
+}
+
+// handleInboundMessage resolves the sender and records an inbound log. The RSVP
+// conversation state machine (UpdateRSVPStatus etc.) can be driven from here.
+func (s *WebhookService) handleInboundMessage(form url.Values) error {
+	from := strings.TrimPrefix(form.Get("From"), "whatsapp:")
+	if from == "" {
+		return nil
+	}
+	inv, err := s.invRepo.FindByWhatsappNumber(from)
+	if err != nil {
+		// Unknown sender: nothing to attach the log to (invitation_id is a FK).
+		return nil
+	}
+
+	var messageID *string
+	if sid := form.Get("MessageSid"); sid != "" {
+		messageID = &sid
+	}
+	payload := toJSON(formToMap(form))
+	return s.logInbound(inv.ID, models.MsgTypeOther, payload, messageID)
+}
+
+// mapTwilioStatus translates a Twilio message status to our log status enum.
+func mapTwilioStatus(twilioStatus string) string {
+	switch strings.ToLower(twilioStatus) {
+	case "failed", "undelivered":
+		return models.WALogFailed
+	case "sent", "delivered", "read":
+		return models.WALogSent
+	default: // queued, accepted, scheduled, sending, ...
+		return models.WALogPending
+	}
+}
+
+func formToMap(form url.Values) map[string]string {
+	m := make(map[string]string, len(form))
+	for k := range form {
+		m[k] = form.Get(k)
+	}
+	return m
 }
 
 // logInbound writes a generic inbound whatsapp_logs row.
@@ -107,26 +157,11 @@ func (s *WebhookService) UpdateGiftInterest(inv *models.Invitation, interest str
 	return s.invRepo.Save(inv)
 }
 
-// TriggerNextMessage decides and sends the next message in the RSVP flow.
-//
-// TODO: implement the real conversation state machine, e.g.:
-//
-//	not_answered            -> (no-op, waiting)
-//	attending + no pax      -> ask_pax
-//	attending + pax + no choice -> ask_event_choice
-//	attending + complete    -> TriggerQRGeneration
-func (s *WebhookService) TriggerNextMessage(inv *models.Invitation) error {
-	// TODO: send the contextually-appropriate interactive message.
-	_ = inv
-	return nil
-}
-
 // TriggerQRGeneration generates and sends the QR once RSVP is complete.
 func (s *WebhookService) TriggerQRGeneration(inv *models.Invitation) error {
 	if inv.RSVPStatus != models.RSVPAttending || inv.PaxCount == nil || inv.EventChoice == nil {
 		return nil // not ready yet
 	}
-	// Reuse the invitation service QR pipeline for a single invitation.
 	if inv.Event == nil {
 		return nil
 	}

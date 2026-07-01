@@ -30,14 +30,6 @@ const (
 	GiftInterestNo       = "no"
 )
 
-// QR status.
-const (
-	QRStatusNotGenerated = "not_generated"
-	QRStatusGenerated    = "generated"
-	QRStatusSent         = "sent"
-	QRStatusSendFailed   = "send_failed"
-)
-
 // Invitation stores guest invitation, RSVP, pax, event choice and QR metadata.
 type Invitation struct {
 	ID             uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -52,11 +44,10 @@ type Invitation struct {
 	EventChoice      *string `gorm:"type:varchar(30);index" json:"event_choice"`
 	GiftInterest     string  `gorm:"type:varchar(30);not null;default:not_asked" json:"gift_interest"`
 
-	QRCodeToken       string     `gorm:"column:qr_code_token;type:varchar(150);uniqueIndex;not null" json:"qr_code_token"`
-	QRWhatsappMediaID *string    `gorm:"column:qr_whatsapp_media_id;type:varchar(255)" json:"qr_whatsapp_media_id"`
-	QRMediaUploadedAt *time.Time `gorm:"column:qr_media_uploaded_at;type:datetime" json:"qr_media_uploaded_at"`
-	QRSentAt          *time.Time `gorm:"column:qr_sent_at;type:datetime" json:"qr_sent_at"`
-	QRStatus          string     `gorm:"column:qr_status;type:varchar(30);not null;default:not_generated;index" json:"qr_status"`
+	// QRCodeToken is kept: it uniquely identifies the guest for check-in and is
+	// what the (in-memory, on-demand) QR image encodes. No QR image/media state
+	// is persisted — QR delivery is stateless.
+	QRCodeToken string `gorm:"column:qr_code_token;type:varchar(150);uniqueIndex;not null" json:"qr_code_token"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

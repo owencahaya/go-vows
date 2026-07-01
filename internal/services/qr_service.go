@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"image/png"
+	"strings"
 
 	"github.com/skip2/go-qrcode"
 
@@ -15,6 +16,9 @@ type QRService interface {
 	Generate(content string) ([]byte, error)
 	// CheckinURL builds the URL that the QR encodes for a given token.
 	CheckinURL(qrToken string) string
+	// ImageURL builds the public URL where the QR PNG is served on demand.
+	// Twilio fetches this as message media; nothing is stored server-side.
+	ImageURL(qrToken string) string
 }
 
 type qrService struct {
@@ -30,6 +34,10 @@ func NewQRService(cfg *config.Config) QRService {
 
 func (s *qrService) CheckinURL(qrToken string) string {
 	return s.cfg.AppBaseURL + "/check-in/" + qrToken
+}
+
+func (s *qrService) ImageURL(qrToken string) string {
+	return strings.TrimRight(s.cfg.AppBaseURL, "/") + "/qr/" + qrToken + ".png"
 }
 
 func (s *qrService) Generate(content string) ([]byte, error) {
