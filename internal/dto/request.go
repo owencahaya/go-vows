@@ -25,6 +25,10 @@ type InvitationFilter struct {
 // SendInvitationsRequest is the body for POST /api/invitations/send.
 type SendInvitationsRequest struct {
 	IDs []uint64 `json:"ids" binding:"required,min=1"`
+	// ImageURL is an optional publicly reachable HTTPS image sent with the
+	// invitation (e.g. an invitation card). When empty, a text-only message
+	// is sent. Ignored when an approved Content Template SID is configured.
+	ImageURL string `json:"image_url"`
 }
 
 // TagRequest is the common body for tag-scoped batch operations.

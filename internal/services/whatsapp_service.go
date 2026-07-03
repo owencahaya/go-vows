@@ -24,8 +24,9 @@ type SendResult struct {
 // WhatsappService abstracts the WhatsApp provider (now Twilio). The interface
 // is unchanged from the previous Meta-based abstraction.
 type WhatsappService interface {
-	// SendInvitation sends the initial/resend invitation message.
-	SendInvitation(inv *models.Invitation, messageType string) SendResult
+	// SendInvitation sends the initial/resend invitation message. imageURL,
+	// when non-empty, is attached as media (freeform sends only).
+	SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult
 	// SendReminder sends a reminder to an attending guest.
 	SendReminder(inv *models.Invitation) SendResult
 	// SendQR sends the QR image. mediaURL is a publicly reachable HTTPS URL
@@ -50,15 +51,18 @@ func NewWhatsappService(cfg *config.Config) WhatsappService {
 	return &twilioWhatsappService{cfg: cfg, client: client}
 }
 
-func (s *twilioWhatsappService) SendInvitation(inv *models.Invitation, messageType string) SendResult {
+func (s *twilioWhatsappService) SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult {
 	body := fmt.Sprintf(
 		"Halo %s, Anda diundang ke acara pernikahan %s. Mohon konfirmasi kehadiran Anda.",
 		inv.GuestName, coupleName(inv),
 	)
+	// Named content variables: keys must match the template's {{...}} names.
+	// The custom invitation template uses {{guest_name}}.
 	return s.send(inv, sendOptions{
 		body:        body,
+		mediaURL:    imageURL,
 		contentSid:  s.cfg.TwilioContentSidInvitation,
-		contentVars: map[string]string{"1": inv.GuestName, "2": coupleName(inv)},
+		contentVars: map[string]string{"guest_name": inv.GuestName, "couple_name": coupleName(inv)},
 	})
 }
 

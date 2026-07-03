@@ -44,7 +44,7 @@ func TestSendRequiresConfig(t *testing.T) {
 	svc := NewWhatsappService(&config.Config{})
 	inv := &models.Invitation{WhatsappNumber: "+14155238886"}
 
-	if res := svc.SendInvitation(inv, models.MsgTypeInitialInvitation); res.Err == nil {
+	if res := svc.SendInvitation(inv, models.MsgTypeInitialInvitation, ""); res.Err == nil {
 		t.Error("SendInvitation with empty config should return an error")
 	}
 	if res := svc.SendQR(inv, "https://example.com/qr/abc.png"); res.Err == nil {

@@ -1,39 +1,10 @@
 {
   "info": {
+    "_postman_id": "a1b2c3d4-vows-4000-8000-projectvows001",
     "name": "Project Vows API",
-    "_postman_id": "a1b2c3d4-0000-4000-8000-projectvows01",
-    "description": "Wedding invitation & WhatsApp RSVP backend.\n\nImport this collection together with the `ProjectVows.postman_environment.json` environment.\n\nVariables (set in the environment):\n- `base_url`   : http://localhost:8080\n- `tag`        : event tag, e.g. stanley-arum\n- `verify_token`: must match META_VERIFY_TOKEN on the server\n\nThe following are captured automatically by test scripts as you run requests:\n- `event_id`        (Create event)\n- `invitation_id`   (List invitations -> first item)\n- `invitation_id_2` (List invitations -> second item)\n- `qr_code_token`   (List invitations -> first item)\n\nSuggested run order:\n1. Health > Health check\n2. Events > Create event\n3. Invitations > Import guests (CSV)  (select sample_guests.csv)\n4. Invitations > List invitations     (captures ids + qr token)\n5. WhatsApp Send > Send invitations (by id)\n6. (simulate RSVP complete in DB, then) WhatsApp Send > Generate & send QR\n7. Check-in > Look up guest by QR\n8. Check-in > Check in",
+    "description": "Wedding invitation & WhatsApp RSVP backend (Gin + GORM + MySQL, Twilio WhatsApp).\n\n## Setup\nImport this collection together with `ProjectVows.postman_environment.json` and select the **Project Vows - Local** environment.\n\nEnvironment variables:\n- `base_url`        : e.g. http://localhost:8080\n- `tag`             : event tag, e.g. stanley-arum\n- `event_id`        : captured automatically by *Events > Create event*\n- `invitation_id`   : captured automatically by *Invitations > List invitations* (first item)\n- `invitation_id_2` : captured automatically by *Invitations > List invitations* (second item)\n- `qr_code_token`   : captured automatically by *Invitations > List invitations* (first item)\n\n## Response envelope\nEvery JSON endpoint returns:\n```json\n{ \"status\": \"success|error\", \"message\": \"...\", \"data\": {}, \"error\": \"machine_code\" }\n```\n\n## Suggested run order\n1. Health > Health check\n2. Events > Create event\n3. Invitations > Import guests (CSV) — select docs/sample_guests.csv\n4. Invitations > List invitations (captures ids + qr token)\n5. WhatsApp Send > Send invitations (by id)\n6. (simulate RSVP complete in DB) WhatsApp Send > Generate & send QR\n7. Check-in > Look up guest by QR\n8. Check-in > Check in\n\n## Notes\n- WhatsApp sending uses **Twilio**. Sends require `TWILIO_*` env vars on the server; otherwise send endpoints return per-item failures with reason \"twilio is not configured\".\n- QR delivery is **stateless**: the QR image is generated in memory on demand and served at `GET /qr/:qr_code_token` (nothing is stored). Twilio fetches that URL as media.\n- The WhatsApp webhook is **Twilio** (form-encoded POST authenticated via `X-Twilio-Signature`). There is no Meta-style GET verification handshake.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
-  "variable": [
-    { "key": "base_url", "value": "http://localhost:8080", "type": "string" },
-    { "key": "tag", "value": "stanley-arum", "type": "string" },
-    { "key": "event_id", "value": "", "type": "string" },
-    { "key": "invitation_id", "value": "", "type": "string" },
-    { "key": "invitation_id_2", "value": "", "type": "string" },
-    { "key": "qr_code_token", "value": "", "type": "string" },
-    { "key": "verify_token", "value": "local-verify-token", "type": "string" }
-  ],
-  "event": [
-    {
-      "listen": "test",
-      "script": {
-        "type": "text/javascript",
-        "exec": [
-          "// Collection-level sanity checks applied to every request.",
-          "pm.test('No server error (status < 500)', function () {",
-          "    pm.expect(pm.response.code).to.be.below(500);",
-          "});",
-          "var ct = pm.response.headers.get('Content-Type') || '';",
-          "if (ct.indexOf('application/json') !== -1) {",
-          "    pm.test('Body has a status field', function () {",
-          "        pm.expect(pm.response.json()).to.have.property('status');",
-          "    });",
-          "}"
-        ]
-      }
-    }
-  ],
   "item": [
     {
       "name": "Health",
@@ -48,7 +19,7 @@
               "host": ["{{base_url}}"],
               "path": ["health"]
             },
-            "description": "Liveness probe. Returns {\"status\":\"ok\"}."
+            "description": "Liveness probe. Returns `{\"status\":\"ok\"}`."
           },
           "response": []
         }
@@ -65,13 +36,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('201 Created', function () { pm.response.to.have.status(201); });",
-                  "var json = pm.response.json();",
-                  "if (json.data && json.data.id) {",
-                  "    pm.collectionVariables.set('event_id', json.data.id);",
-                  "    pm.environment.set('event_id', json.data.id);",
-                  "    console.log('Captured event_id =', json.data.id);",
-                  "}"
+                  "const json = pm.response.json();",
+                  "if (json && json.data && json.data.id) {",
+                  "  pm.environment.set('event_id', json.data.id);",
+                  "  if (json.data.tag) { pm.environment.set('tag', json.data.tag); }",
+                  "  console.log('Captured event_id =', json.data.id);",
+                  "}",
+                  "pm.test('status is 2xx', function () {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+                  "});"
                 ]
               }
             }
@@ -81,14 +54,15 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tag\": \"{{tag}}\",\n  \"couple_name\": \"Stanley & Arum\",\n  \"holy_matrimony_date\": \"2026-06-20T10:00:00+07:00\",\n  \"holy_matrimony_location\": \"Gereja ABC\",\n  \"reception_date\": \"2026-06-20T18:00:00+07:00\",\n  \"reception_location\": \"Ballroom XYZ\",\n  \"gift_address\": \"Alamat hadiah\",\n  \"bank_account\": \"BCA 123456789 a/n Stanley\"\n}"
+              "raw": "{\n  \"tag\": \"{{tag}}\",\n  \"couple_name\": \"Stanley & Arum\",\n  \"holy_matrimony_date\": \"2026-09-12T09:00:00Z\",\n  \"holy_matrimony_location\": \"St. Mary Church, Jakarta\",\n  \"reception_date\": \"2026-09-12T18:00:00Z\",\n  \"reception_location\": \"Grand Ballroom, Jakarta\",\n  \"gift_address\": \"Jl. Melati No. 1, Jakarta\",\n  \"bank_account\": \"BCA 1234567890 a/n Stanley\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/events",
               "host": ["{{base_url}}"],
               "path": ["api", "events"]
             },
-            "description": "Create a wedding/couple. `tag` must be unique. Captures `event_id`."
+            "description": "Create a wedding event. `tag` and `couple_name` are required; all date/location/gift fields are optional. On success returns the created event (201). Duplicate tag returns 409 `create_failed`."
           },
           "response": []
         },
@@ -102,12 +76,12 @@
               "host": ["{{base_url}}"],
               "path": ["api", "events"]
             },
-            "description": "List all events, newest first."
+            "description": "List all events."
           },
           "response": []
         },
         {
-          "name": "Get event detail",
+          "name": "Get event by id",
           "request": {
             "method": "GET",
             "header": [],
@@ -116,7 +90,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "events", "{{event_id}}"]
             },
-            "description": "Get a single event by id."
+            "description": "Fetch a single event by numeric id. 404 `event_not_found` if missing."
           },
           "response": []
         }
@@ -137,7 +111,7 @@
                   "key": "file",
                   "type": "file",
                   "src": [],
-                  "description": "Select sample_guests.csv (or your own). Header: tag,guest_name,whatsapp_number"
+                  "description": "CSV with header `tag,guest_name,whatsapp_number`. Use docs/sample_guests.csv."
                 }
               ]
             },
@@ -146,7 +120,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "import-csv"]
             },
-            "description": "Upload a CSV of guests (multipart/form-data, field `file`).\n\nIMPORTANT: In the Body tab, click the `file` row and choose a file from disk (Postman cannot store a file path inside the exported collection). Use `sample_guests.csv` from the repo root.\n\nReturns an import summary with total/success/failed counts and per-row failure reasons."
+            "description": "Multipart upload (form field `file`). Header row `tag,guest_name,whatsapp_number` is auto-detected. Each row is validated independently; failures are returned in `data.failed_rows` without aborting the import. The referenced event `tag` must already exist."
           },
           "response": []
         },
@@ -158,18 +132,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var json = pm.response.json();",
-                  "var rows = (json && json.data) || [];",
+                  "const json = pm.response.json();",
+                  "const rows = (json && json.data) || [];",
                   "if (rows.length > 0) {",
-                  "    pm.collectionVariables.set('invitation_id', rows[0].id);",
-                  "    pm.environment.set('invitation_id', rows[0].id);",
-                  "    pm.collectionVariables.set('qr_code_token', rows[0].qr_code_token);",
-                  "    pm.environment.set('qr_code_token', rows[0].qr_code_token);",
-                  "    console.log('Captured invitation_id =', rows[0].id, ' qr_code_token =', rows[0].qr_code_token);",
+                  "  pm.environment.set('invitation_id', rows[0].id);",
+                  "  if (rows[0].qr_code_token) { pm.environment.set('qr_code_token', rows[0].qr_code_token); }",
+                  "  console.log('Captured invitation_id =', rows[0].id, 'qr_code_token =', rows[0].qr_code_token);",
                   "}",
                   "if (rows.length > 1) {",
-                  "    pm.collectionVariables.set('invitation_id_2', rows[1].id);",
-                  "    pm.environment.set('invitation_id_2', rows[1].id);",
+                  "  pm.environment.set('invitation_id_2', rows[1].id);",
                   "}"
                 ]
               }
@@ -185,17 +156,16 @@
               "query": [
                 { "key": "tag", "value": "{{tag}}" },
                 { "key": "event_id", "value": "", "disabled": true },
-                { "key": "rsvp_status", "value": "attending", "disabled": true },
-                { "key": "invitation_status", "value": "imported", "disabled": true },
-                { "key": "qr_status", "value": "not_generated", "disabled": true }
+                { "key": "rsvp_status", "value": "attending", "description": "not_answered | attending | not_attending", "disabled": true },
+                { "key": "invitation_status", "value": "invitation_sent", "description": "imported | invitation_sent | invitation_failed", "disabled": true }
               ]
             },
-            "description": "List invitations. All query params are optional and combine with AND. Enable the disabled params to filter.\n\nCaptures `invitation_id`, `invitation_id_2`, and `qr_code_token` from the first/second results."
+            "description": "List invitations with optional filters: `tag`, `event_id`, `rsvp_status`, `invitation_status`. (There is no `qr_status` filter — QR delivery is stateless and stores no QR state.)"
           },
           "response": []
         },
         {
-          "name": "Get invitation detail",
+          "name": "Get invitation by id",
           "request": {
             "method": "GET",
             "header": [],
@@ -204,7 +174,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "{{invitation_id}}"]
             },
-            "description": "Get a single invitation (includes event and check-in logs)."
+            "description": "Fetch a single invitation (with event + check-in logs) by id. 404 `invitation_not_found` if missing."
           },
           "response": []
         }
@@ -220,146 +190,202 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"ids\": [{{invitation_id}}, {{invitation_id_2}}]\n}"
+              "raw": "{\n  \"ids\": [{{invitation_id}}],\n  \"image_url\": \"https://example.com/invitation-card.jpg\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/invitations/send",
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "send"]
             },
-            "description": "Send the initial invitation to specific ids. Returns a batch summary."
+            "description": "Send the initial invitation to the given invitation ids. Updates `invitation_status` to `invitation_sent`/`invitation_failed` and writes a `whatsapp_logs` row per send. Returns a batch summary.\n\n`image_url` (optional): a publicly reachable HTTPS image attached to the invitation (Twilio fetches it as WhatsApp media). Omit or leave empty for a text-only message. Ignored when an approved Content Template SID is configured on the server."
           },
           "response": []
         },
         {
-          "name": "Send pending invitations",
+          "name": "Send pending (by tag)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tag\": \"{{tag}}\"\n}"
+              "raw": "{\n  \"tag\": \"{{tag}}\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/invitations/send-pending",
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "send-pending"]
             },
-            "description": "Send to all guests with invitation_status = imported for this tag."
+            "description": "Send the initial invitation to all imported (not-yet-sent) guests of a tag."
           },
           "response": []
         },
         {
-          "name": "Resend to unanswered",
+          "name": "Resend unanswered (by tag)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tag\": \"{{tag}}\"\n}"
+              "raw": "{\n  \"tag\": \"{{tag}}\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/invitations/resend-unanswered",
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "resend-unanswered"]
             },
-            "description": "Resend to all guests with rsvp_status = not_answered for this tag."
+            "description": "Resend the invitation to guests whose `rsvp_status` is still `not_answered`."
           },
           "response": []
         },
         {
-          "name": "Send reminder",
+          "name": "Send reminder (by tag)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tag\": \"{{tag}}\"\n}"
+              "raw": "{\n  \"tag\": \"{{tag}}\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/invitations/send-reminder",
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "send-reminder"]
             },
-            "description": "Send a reminder to all attending guests for this tag."
+            "description": "Send a reminder to all attending guests of a tag."
           },
           "response": []
         },
         {
-          "name": "Generate & send QR",
+          "name": "Generate & send QR (by tag)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tag\": \"{{tag}}\"\n}"
+              "raw": "{\n  \"tag\": \"{{tag}}\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/invitations/generate-send-qr",
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "generate-send-qr"]
             },
-            "description": "Generate + upload + send QR to eligible guests (attending, pax_count set, event_choice set, not yet sent).\n\nTip: to make a guest eligible during testing, set rsvp_status='attending', pax_count and event_choice in the DB, e.g.:\nUPDATE invitations SET rsvp_status='attending', pax_count=2, event_choice='both' WHERE id=1;"
+            "description": "For each eligible guest (rsvp_status = attending, pax_count not null, event_choice not null): generate a QR in memory and send it via WhatsApp (Twilio fetches the on-demand `/qr/:qr_code_token` URL). Nothing is stored. Writes a `send_qr` `whatsapp_logs` row. Note: stateless delivery has no 'already sent' gate — repeated calls re-send."
           },
           "response": []
         },
         {
-          "name": "Resend QR (by id)",
+          "name": "Resend QR (by tag + ids)",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"tag\": \"{{tag}}\",\n  \"ids\": [{{invitation_id}}]\n}"
+              "raw": "{\n  \"tag\": \"{{tag}}\",\n  \"ids\": [{{invitation_id}}]\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/invitations/resend-qr",
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "resend-qr"]
             },
-            "description": "Resend QR to selected ids within a tag. Regenerates media if missing."
+            "description": "Resend a fresh QR to selected invitation ids (guarded to the given tag). Every resend regenerates a new QR in memory and sends immediately; nothing is reused or persisted. Writes a `resend_qr` `whatsapp_logs` row."
           },
           "response": []
         }
       ]
     },
     {
-      "name": "Webhook (called by Meta)",
+      "name": "QR Image",
       "item": [
         {
-          "name": "Verify webhook",
+          "name": "Get QR image (PNG)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token={{verify_token}}&hub.challenge=12345",
+              "raw": "{{base_url}}/qr/{{qr_code_token}}.png",
               "host": ["{{base_url}}"],
-              "path": ["api", "webhook", "whatsapp"],
-              "query": [
-                { "key": "hub.mode", "value": "subscribe" },
-                { "key": "hub.verify_token", "value": "{{verify_token}}" },
-                { "key": "hub.challenge", "value": "12345" }
-              ]
+              "path": ["qr", "{{qr_code_token}}.png"]
             },
-            "description": "Meta verification handshake. Echoes hub.challenge as plain text when the token matches META_VERIFY_TOKEN; otherwise 403."
+            "description": "Public, stateless QR image endpoint. Generates the QR PNG in memory on demand (encoding the check-in URL) and streams it as `image/png`. This is the URL Twilio fetches as WhatsApp media. The `.png` suffix is optional. 404 `invitation_not_found` for an unknown token."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Webhook (Twilio)",
+      "item": [
+        {
+          "name": "Webhook probe (GET)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/webhook/whatsapp",
+              "host": ["{{base_url}}"],
+              "path": ["api", "webhook", "whatsapp"]
+            },
+            "description": "Twilio does not use a GET verification handshake (unlike Meta). This endpoint simply returns 200 `ok` for health/probing."
           },
           "response": []
         },
         {
-          "name": "Receive webhook",
+          "name": "Inbound message (POST)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" },
+              { "key": "X-Twilio-Signature", "value": "", "description": "Set by Twilio. When TWILIO_AUTH_TOKEN is configured on the server, the signature is validated and mismatches return 403 invalid_signature." }
+            ],
             "body": {
-              "mode": "raw",
-              "raw": "{\n  \"object\": \"whatsapp_business_account\",\n  \"entry\": [\n    {\n      \"changes\": [\n        {\n          \"value\": {\n            \"messaging_product\": \"whatsapp\",\n            \"messages\": [\n              {\n                \"from\": \"6281234567890\",\n                \"id\": \"wamid.TEST123\",\n                \"type\": \"interactive\",\n                \"interactive\": {\n                  \"type\": \"button_reply\",\n                  \"button_reply\": { \"id\": \"rsvp_attending\", \"title\": \"Hadir\" }\n                }\n              }\n            ]\n          },\n          \"field\": \"messages\"\n        }\n      ]\n    }\n  ]\n}"
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "MessageSid", "value": "SM00000000000000000000000000000000" },
+                { "key": "From", "value": "whatsapp:+6281234567890" },
+                { "key": "To", "value": "whatsapp:+14155238886" },
+                { "key": "Body", "value": "Hadir" },
+                { "key": "ProfileName", "value": "Budi Santoso" },
+                { "key": "NumMedia", "value": "0" }
+              ]
             },
             "url": {
               "raw": "{{base_url}}/api/webhook/whatsapp",
               "host": ["{{base_url}}"],
               "path": ["api", "webhook", "whatsapp"]
             },
-            "description": "Sample inbound webhook payload. Returns {\"status\":\"received\"}. (Server-side parsing of interactive replies is a TODO.)"
+            "description": "Twilio inbound WhatsApp message (application/x-www-form-urlencoded). The sender is resolved by `From` (whatsapp:+E164); when matched, an inbound `whatsapp_logs` row is written. Unknown senders are ignored. Returns 200 `{\"status\":\"received\"}`."
+          },
+          "response": []
+        },
+        {
+          "name": "Status callback (POST)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" },
+              { "key": "X-Twilio-Signature", "value": "", "description": "Set by Twilio; validated when TWILIO_AUTH_TOKEN is configured." }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "MessageSid", "value": "SM00000000000000000000000000000000" },
+                { "key": "MessageStatus", "value": "delivered", "description": "queued | sending | sent | delivered | read | failed | undelivered" },
+                { "key": "To", "value": "whatsapp:+6281234567890" },
+                { "key": "From", "value": "whatsapp:+14155238886" }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/webhook/whatsapp",
+              "host": ["{{base_url}}"],
+              "path": ["api", "webhook", "whatsapp"]
+            },
+            "description": "Twilio delivery/status callback. A payload containing `MessageStatus` updates the matching outbound `whatsapp_logs` row's status (failed/undelivered → failed; sent/delivered/read → sent; else pending)."
           },
           "response": []
         }
@@ -378,7 +404,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "check-in", "{{qr_code_token}}"]
             },
-            "description": "Resolve a QR token to guest details and per-event check-in status."
+            "description": "Resolve a guest by QR token and return guest name, pax count, event choice, and per-event check-in status. 404 `invitation_not_found` for an unknown token."
           },
           "response": []
         },
@@ -389,18 +415,23 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"qr_code_token\": \"{{qr_code_token}}\",\n  \"event_type\": \"reception\",\n  \"actual_pax\": 2,\n  \"scanner_name\": \"Admin 1\"\n}"
+              "raw": "{\n  \"qr_code_token\": \"{{qr_code_token}}\",\n  \"event_type\": \"holy_matrimony\",\n  \"actual_pax\": 2,\n  \"scanner_name\": \"Gate A\"\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/check-in",
               "host": ["{{base_url}}"],
               "path": ["api", "check-in"]
             },
-            "description": "Record a check-in. event_type is holy_matrimony | reception. Validated against rsvp_status (must be attending), event_choice, pax_count, and duplicate check-in.\n\nError codes: not_attending, invalid_event, invalid_pax, already_checked_in, invitation_not_found."
+            "description": "Record a check-in. `event_type` is `holy_matrimony` or `reception` (must be allowed by the guest's `event_choice`). `actual_pax` must be >= 1 and <= registered `pax_count`. Errors: 404 `invitation_not_found`, 422 `not_attending`/`invalid_event`/`invalid_pax`, 409 `already_checked_in`."
           },
           "response": []
         }
       ]
     }
+  ],
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "tag", "value": "stanley-arum" }
   ]
 }

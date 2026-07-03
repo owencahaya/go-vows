@@ -50,13 +50,14 @@ func (s *InvitationService) QRImageByToken(qrToken string) ([]byte, error) {
 	return s.qr.Generate(s.qr.CheckinURL(inv.QRCodeToken))
 }
 
-// SendByIDs sends the initial invitation to the given invitation ids.
-func (s *InvitationService) SendByIDs(ids []uint64) (*dto.BatchSummary, error) {
+// SendByIDs sends the initial invitation to the given invitation ids. An
+// optional imageURL is sent as media alongside the invitation text.
+func (s *InvitationService) SendByIDs(ids []uint64, imageURL string) (*dto.BatchSummary, error) {
 	invs, err := s.invRepo.FindByIDs(ids)
 	if err != nil {
 		return nil, err
 	}
-	return s.sendInvitationBatch(invs, models.MsgTypeInitialInvitation), nil
+	return s.sendInvitationBatch(invs, models.MsgTypeInitialInvitation, imageURL), nil
 }
 
 // SendPending sends the invitation to all imported (not yet sent) guests of a tag.
@@ -65,7 +66,7 @@ func (s *InvitationService) SendPending(tag string) (*dto.BatchSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.sendInvitationBatch(invs, models.MsgTypeInitialInvitation), nil
+	return s.sendInvitationBatch(invs, models.MsgTypeInitialInvitation, ""), nil
 }
 
 // ResendUnanswered resends the invitation to guests who have not answered.
@@ -74,7 +75,7 @@ func (s *InvitationService) ResendUnanswered(tag string) (*dto.BatchSummary, err
 	if err != nil {
 		return nil, err
 	}
-	return s.sendInvitationBatch(invs, models.MsgTypeResendInvitation), nil
+	return s.sendInvitationBatch(invs, models.MsgTypeResendInvitation, ""), nil
 }
 
 // SendReminder sends a reminder to all attending guests.
@@ -94,11 +95,12 @@ func (s *InvitationService) SendReminder(tag string) (*dto.BatchSummary, error) 
 }
 
 // sendInvitationBatch sends invitations and updates invitation_status accordingly.
-func (s *InvitationService) sendInvitationBatch(invs []models.Invitation, msgType string) *dto.BatchSummary {
+// imageURL, when non-empty, is sent as media alongside the invitation text.
+func (s *InvitationService) sendInvitationBatch(invs []models.Invitation, msgType, imageURL string) *dto.BatchSummary {
 	summary := &dto.BatchSummary{Total: len(invs), Results: []dto.BatchResult{}}
 	for i := range invs {
 		inv := &invs[i]
-		res := s.whatsapp.SendInvitation(inv, msgType)
+		res := s.whatsapp.SendInvitation(inv, msgType, imageURL)
 		s.logSend(inv, msgType, res)
 
 		if res.Err != nil {

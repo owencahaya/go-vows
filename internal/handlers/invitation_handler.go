@@ -86,7 +86,7 @@ func (h *InvitationHandler) Send(c *gin.Context) {
 		utils.BadRequest(c, err.Error())
 		return
 	}
-	summary, err := h.svc.SendByIDs(req.IDs)
+	summary, err := h.svc.SendByIDs(req.IDs, req.ImageURL)
 	if err != nil {
 		utils.InternalError(c, err)
 		return
