@@ -11,6 +11,10 @@ import (
 	"projectvows/internal/repositories"
 )
 
+// sendDelay is paced between successive outbound Twilio sends in a batch to
+// avoid bursting past Twilio's per-second rate limit.
+const sendDelay = 1 * time.Second
+
 type InvitationService struct {
 	invRepo  *repositories.InvitationRepository
 	logRepo  *repositories.WhatsappLogRepository
@@ -90,6 +94,7 @@ func (s *InvitationService) SendReminder(tag string) (*dto.BatchSummary, error) 
 		res := s.whatsapp.SendReminder(inv)
 		s.logSend(inv, models.MsgTypeReminder, res)
 		s.appendResult(summary, inv.ID, res.Err)
+		time.Sleep(sendDelay)
 	}
 	return summary, nil
 }
@@ -110,6 +115,7 @@ func (s *InvitationService) sendInvitationBatch(invs []models.Invitation, msgTyp
 		}
 		_ = s.invRepo.Save(inv)
 		s.appendResult(summary, inv.ID, res.Err)
+		time.Sleep(sendDelay)
 	}
 	return summary
 }
@@ -125,6 +131,7 @@ func (s *InvitationService) GenerateAndSendQR(tag string) (*dto.BatchSummary, er
 	for i := range invs {
 		inv := &invs[i]
 		s.processQR(inv, summary, models.MsgTypeSendQR)
+		time.Sleep(sendDelay)
 	}
 	return summary, nil
 }
@@ -149,6 +156,7 @@ func (s *InvitationService) ResendQR(tag string, ids []uint64) (*dto.BatchSummar
 		}
 		summary.Total++
 		s.processQR(inv, summary, models.MsgTypeResendQR)
+		time.Sleep(sendDelay)
 	}
 	return summary, nil
 }
