@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1b2c3d4-vows-4000-8000-projectvows001",
     "name": "Project Vows API",
-    "description": "Wedding invitation & WhatsApp RSVP backend (Gin + GORM + MySQL, Twilio WhatsApp).\n\n## Setup\nImport this collection together with `ProjectVows.postman_environment.json` and select the **Project Vows - Local** environment.\n\nEnvironment variables:\n- `base_url`        : e.g. http://localhost:8080\n- `tag`             : event tag, e.g. stanley-arum\n- `event_id`        : captured automatically by *Events > Create event*\n- `invitation_id`   : captured automatically by *Invitations > List invitations* (first item)\n- `invitation_id_2` : captured automatically by *Invitations > List invitations* (second item)\n- `qr_code_token`   : captured automatically by *Invitations > List invitations* (first item)\n\n## Response envelope\nEvery JSON endpoint returns:\n```json\n{ \"status\": \"success|error\", \"message\": \"...\", \"data\": {}, \"error\": \"machine_code\" }\n```\n\n## Suggested run order\n1. Health > Health check\n2. Events > Create event\n3. Invitations > Import guests (CSV) — select docs/sample_guests.csv\n4. Invitations > List invitations (captures ids + qr token)\n5. WhatsApp Send > Send invitations (by id)\n6. (simulate RSVP complete in DB) WhatsApp Send > Generate & send QR\n7. Check-in > Look up guest by QR\n8. Check-in > Check in\n\n## Notes\n- WhatsApp sending uses **Twilio**. Sends require `TWILIO_*` env vars on the server; otherwise send endpoints return per-item failures with reason \"twilio is not configured\".\n- QR delivery is **stateless**: the QR image is generated in memory on demand and served at `GET /qr/:qr_code_token` (nothing is stored). Twilio fetches that URL as media.\n- The WhatsApp webhook is **Twilio** (form-encoded POST authenticated via `X-Twilio-Signature`). There is no Meta-style GET verification handshake.",
+    "description": "Wedding invitation & WhatsApp RSVP backend (Gin + GORM + MySQL, Meta WhatsApp Cloud API).\n\n## Setup\nImport this collection together with `ProjectVows.postman_environment.json` and select the **Project Vows - Local** environment.\n\nEnvironment variables:\n- `base_url`        : e.g. http://localhost:8080\n- `tag`             : event tag, e.g. stanley-arum\n- `event_id`        : captured automatically by *Events > Create event*\n- `invitation_id`   : captured automatically by *Invitations > List invitations* (first item)\n- `invitation_id_2` : captured automatically by *Invitations > List invitations* (second item)\n- `qr_code_token`   : captured automatically by *Invitations > List invitations* (first item)\n\n## Response envelope\nEvery JSON endpoint returns:\n```json\n{ \"status\": \"success|error\", \"message\": \"...\", \"data\": {}, \"error\": \"machine_code\" }\n```\n\n## Suggested run order\n1. Health > Health check\n2. Events > Create event\n3. Invitations > Import guests (CSV) — select docs/sample_guests.csv\n4. Invitations > List invitations (captures ids + qr token)\n5. WhatsApp Send > Send invitations (by id)\n6. (simulate RSVP complete in DB) WhatsApp Send > Generate & send QR\n7. Check-in > Look up guest by QR\n8. Check-in > Check in\n\n## Notes\n- WhatsApp sending uses the **Meta WhatsApp Cloud API** (Graph API `/messages` endpoint). Sends require `META_ACCESS_TOKEN` and `META_PHONE_NUMBER_ID` on the server; otherwise send endpoints return per-item failures with reason \"meta whatsapp is not configured\".\n- QR delivery is **stateless**: the QR image is generated in memory on demand and served at `GET /qr/:qr_code_token` (nothing is stored). Meta fetches that URL as `image.link` media.\n- The WhatsApp webhook follows **Meta's** contract: `GET` performs the `hub.challenge` subscription verification handshake (using `META_VERIFY_TOKEN`), and `POST` receives JSON payloads shaped as `entry[].changes[].value.{messages[],statuses[]}`.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -198,7 +198,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "send"]
             },
-            "description": "Send the initial invitation to the given invitation ids. Updates `invitation_status` to `invitation_sent`/`invitation_failed` and writes a `whatsapp_logs` row per send. Returns a batch summary.\n\n`image_url` (optional): a publicly reachable HTTPS image attached to the invitation (Twilio fetches it as WhatsApp media). Omit or leave empty for a text-only message. Ignored when an approved Content Template SID is configured on the server."
+            "description": "Send the initial invitation to the given invitation ids. Updates `invitation_status` to `invitation_sent`/`invitation_failed` and writes a `whatsapp_logs` row per send. Returns a batch summary.\n\n`image_url` (optional): a publicly reachable HTTPS image attached to the invitation as a Meta `image.link` message with the invitation text as caption. Omit or leave empty for a text-only message."
           },
           "response": []
         },
@@ -274,7 +274,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "invitations", "generate-send-qr"]
             },
-            "description": "For each eligible guest (rsvp_status = attending, pax_count not null, event_choice not null): generate a QR in memory and send it via WhatsApp (Twilio fetches the on-demand `/qr/:qr_code_token` URL). Nothing is stored. Writes a `send_qr` `whatsapp_logs` row. Note: stateless delivery has no 'already sent' gate — repeated calls re-send."
+            "description": "For each eligible guest (rsvp_status = attending, pax_count not null, event_choice not null): generate a QR in memory and send it via WhatsApp (Meta fetches the on-demand `/qr/:qr_code_token` URL as `image.link`). Nothing is stored. Writes a `send_qr` `whatsapp_logs` row. Note: stateless delivery has no 'already sent' gate — repeated calls re-send."
           },
           "response": []
         },
@@ -312,26 +312,31 @@
               "host": ["{{base_url}}"],
               "path": ["qr", "{{qr_code_token}}.png"]
             },
-            "description": "Public, stateless QR image endpoint. Generates the QR PNG in memory on demand (encoding the check-in URL) and streams it as `image/png`. This is the URL Twilio fetches as WhatsApp media. The `.png` suffix is optional. 404 `invitation_not_found` for an unknown token."
+            "description": "Public, stateless QR image endpoint. Generates the QR PNG in memory on demand (encoding the check-in URL) and streams it as `image/png`. This is the URL Meta fetches as `image.link` WhatsApp media. The `.png` suffix is optional. 404 `invitation_not_found` for an unknown token."
           },
           "response": []
         }
       ]
     },
     {
-      "name": "Webhook (Twilio)",
+      "name": "Webhook (Meta)",
       "item": [
         {
-          "name": "Webhook probe (GET)",
+          "name": "Verify subscription (GET)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/webhook/whatsapp",
+              "raw": "{{base_url}}/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token={{meta_verify_token}}&hub.challenge=1234567890",
               "host": ["{{base_url}}"],
-              "path": ["api", "webhook", "whatsapp"]
+              "path": ["api", "webhook", "whatsapp"],
+              "query": [
+                { "key": "hub.mode", "value": "subscribe" },
+                { "key": "hub.verify_token", "value": "{{meta_verify_token}}" },
+                { "key": "hub.challenge", "value": "1234567890" }
+              ]
             },
-            "description": "Twilio does not use a GET verification handshake (unlike Meta). This endpoint simply returns 200 `ok` for health/probing."
+            "description": "Meta webhook subscription verification handshake, performed once when you configure the webhook URL in the Meta App Dashboard. When `hub.mode=subscribe` and `hub.verify_token` matches `META_VERIFY_TOKEN` on the server, it echoes `hub.challenge` back as plain text (200). Otherwise 403 `verification_failed`."
           },
           "response": []
         },
@@ -339,53 +344,37 @@
           "name": "Inbound message (POST)",
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" },
-              { "key": "X-Twilio-Signature", "value": "", "description": "Set by Twilio. When TWILIO_AUTH_TOKEN is configured on the server, the signature is validated and mismatches return 403 invalid_signature." }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
-              "mode": "urlencoded",
-              "urlencoded": [
-                { "key": "MessageSid", "value": "SM00000000000000000000000000000000" },
-                { "key": "From", "value": "whatsapp:+6281234567890" },
-                { "key": "To", "value": "whatsapp:+14155238886" },
-                { "key": "Body", "value": "Hadir" },
-                { "key": "ProfileName", "value": "Budi Santoso" },
-                { "key": "NumMedia", "value": "0" }
-              ]
+              "mode": "raw",
+              "raw": "{\n  \"entry\": [\n    {\n      \"changes\": [\n        {\n          \"value\": {\n            \"messaging_product\": \"whatsapp\",\n            \"metadata\": { \"phone_number_id\": \"<PHONE_NUMBER_ID>\" },\n            \"contacts\": [ { \"wa_id\": \"6281234567890\", \"profile\": { \"name\": \"Budi Santoso\" } } ],\n            \"messages\": [\n              {\n                \"from\": \"6281234567890\",\n                \"id\": \"wamid.HBgLNjI4MTIzNDU2Nzg5MBUCABIYFjNFQjBDQUZFRUFERUFERUFERUFERUE=\",\n                \"timestamp\": \"1710000000\",\n                \"type\": \"text\",\n                \"text\": { \"body\": \"Hadir\" }\n              }\n            ]\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/webhook/whatsapp",
               "host": ["{{base_url}}"],
               "path": ["api", "webhook", "whatsapp"]
             },
-            "description": "Twilio inbound WhatsApp message (application/x-www-form-urlencoded). The sender is resolved by `From` (whatsapp:+E164); when matched, an inbound `whatsapp_logs` row is written. Unknown senders are ignored. Returns 200 `{\"status\":\"received\"}`."
+            "description": "Meta inbound WhatsApp message event, shaped as `entry[].changes[].value.messages[]`. The sender is resolved by `messages[].from` (digits, no `+`); when matched, an inbound `whatsapp_logs` row is written with the full raw payload. Unknown senders are ignored. Returns 200 `{\"status\":\"received\"}`."
           },
           "response": []
         },
         {
-          "name": "Status callback (POST)",
+          "name": "Status update (POST)",
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" },
-              { "key": "X-Twilio-Signature", "value": "", "description": "Set by Twilio; validated when TWILIO_AUTH_TOKEN is configured." }
-            ],
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
-              "mode": "urlencoded",
-              "urlencoded": [
-                { "key": "MessageSid", "value": "SM00000000000000000000000000000000" },
-                { "key": "MessageStatus", "value": "delivered", "description": "queued | sending | sent | delivered | read | failed | undelivered" },
-                { "key": "To", "value": "whatsapp:+6281234567890" },
-                { "key": "From", "value": "whatsapp:+14155238886" }
-              ]
+              "mode": "raw",
+              "raw": "{\n  \"entry\": [\n    {\n      \"changes\": [\n        {\n          \"value\": {\n            \"messaging_product\": \"whatsapp\",\n            \"metadata\": { \"phone_number_id\": \"<PHONE_NUMBER_ID>\" },\n            \"statuses\": [\n              {\n                \"id\": \"wamid.HBgLNjI4MTIzNDU2Nzg5MBUCABIYFjNFQjBDQUZFRUFERUFERUFERUFERUE=\",\n                \"status\": \"delivered\",\n                \"timestamp\": \"1710000000\",\n                \"recipient_id\": \"6281234567890\"\n              }\n            ]\n          }\n        }\n      ]\n    }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/webhook/whatsapp",
               "host": ["{{base_url}}"],
               "path": ["api", "webhook", "whatsapp"]
             },
-            "description": "Twilio delivery/status callback. A payload containing `MessageStatus` updates the matching outbound `whatsapp_logs` row's status (failed/undelivered → failed; sent/delivered/read → sent; else pending)."
+            "description": "Meta message status update, shaped as `entry[].changes[].value.statuses[]`. Updates the matching outbound `whatsapp_logs` row's status by `statuses[].id` (the wamid): `failed` → failed; `sent`/`delivered`/`read` → sent; else pending."
           },
           "response": []
         }
