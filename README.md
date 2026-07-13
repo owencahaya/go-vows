@@ -58,7 +58,7 @@ internal/
 
    ```bash
    cp .env.example .env
-   # edit .env with your DB credentials and (optionally) Meta credentials
+   # edit .env with your DB credentials and Meta WhatsApp Cloud API credentials
    ```
 
    | Variable               | Description                           | Default                 |
@@ -70,10 +70,10 @@ internal/
    | `DB_NAME`              | Database name                         | `vows`                  |
    | `DB_USER`              | MySQL user                            | `root`                  |
    | `DB_PASSWORD`          | MySQL password                        | `password`              |
-   | `META_ACCESS_TOKEN`    | Meta Cloud API token (for later)      | _empty_                 |
-   | `META_PHONE_NUMBER_ID` | Meta phone number id (for later)      | _empty_                 |
+   | `META_ACCESS_TOKEN`    | Meta WhatsApp Cloud API access token  | _empty_                 |
+   | `META_PHONE_NUMBER_ID` | Meta phone number id                  | _empty_                 |
    | `META_VERIFY_TOKEN`    | Webhook verification token            | _empty_                 |
-   | `META_API_VERSION`     | Graph API version                     | `v20.0`                 |
+   | `META_API_VERSION`     | Graph API version                     | `v23.0`                 |
 
 ## Migrations & running
 
