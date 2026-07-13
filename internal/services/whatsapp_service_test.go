@@ -7,39 +7,38 @@ import (
 	"projectvows/internal/models"
 )
 
-func TestToWhatsAppAddress(t *testing.T) {
+func TestNormalizeIndonesianPhone(t *testing.T) {
 	cases := map[string]string{
-		"+14155238886":          "whatsapp:+14155238886",
-		"14155238886":           "whatsapp:+14155238886",
-		"whatsapp:+14155238886": "whatsapp:+14155238886",
-		" +6281234567 ":         "whatsapp:+6281234567",
-		"":                      "",
+		"08123456789":       "628123456789",
+		"628123456789":      "628123456789",
+		"+628123456789":     "628123456789",
+		"whatsapp:+6281234": "6281234",
+		" 0812-3456-789 ":   "628123456789",
+		"":                  "",
 	}
 	for in, want := range cases {
-		if got := toWhatsAppAddress(in); got != want {
-			t.Errorf("toWhatsAppAddress(%q) = %q, want %q", in, got, want)
+		if got := normalizeIndonesianPhone(in); got != want {
+			t.Errorf("normalizeIndonesianPhone(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
-func TestMapTwilioStatus(t *testing.T) {
+func TestMapMetaStatus(t *testing.T) {
 	cases := map[string]string{
-		"failed":      models.WALogFailed,
-		"undelivered": models.WALogFailed,
-		"sent":        models.WALogSent,
-		"delivered":   models.WALogSent,
-		"read":        models.WALogSent,
-		"queued":      models.WALogPending,
-		"sending":     models.WALogPending,
+		"failed":    models.WALogFailed,
+		"sent":      models.WALogSent,
+		"delivered": models.WALogSent,
+		"read":      models.WALogSent,
+		"unknown":   models.WALogPending,
 	}
 	for in, want := range cases {
-		if got := mapTwilioStatus(in); got != want {
-			t.Errorf("mapTwilioStatus(%q) = %q, want %q", in, got, want)
+		if got := mapMetaStatus(in); got != want {
+			t.Errorf("mapMetaStatus(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
-// When Twilio is unconfigured, sends must fail fast without hitting the network.
+// When Meta is unconfigured, sends must fail fast without hitting the network.
 func TestSendRequiresConfig(t *testing.T) {
 	svc := NewWhatsappService(&config.Config{})
 	inv := &models.Invitation{WhatsappNumber: "+14155238886"}

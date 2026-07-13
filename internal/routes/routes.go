@@ -21,7 +21,7 @@ func Register(r *gin.Engine, h Handlers) {
 	})
 
 	// Public QR image, generated in memory on demand (nothing is stored) and
-	// fetched by Twilio as WhatsApp media. URL matches QRService.ImageURL.
+	// fetched by Meta as WhatsApp image.link media. URL matches QRService.ImageURL.
 	r.GET("/qr/:qr_code_token", h.Invitation.QRImage)
 
 	api := r.Group("/api")

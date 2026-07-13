@@ -1,12 +1,13 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
-
-	"github.com/twilio/twilio-go"
-	twilioApi "github.com/twilio/twilio-go/rest/api/v2010"
+	"time"
 
 	"projectvows/internal/config"
 	"projectvows/internal/models"
@@ -14,181 +15,190 @@ import (
 
 // SendResult is the normalized outcome of a WhatsApp send operation.
 // Field names are preserved from the previous integration so callers and the
-// whatsapp_logs writer stay unchanged; the values now come from Twilio.
+// whatsapp_logs writer stay unchanged; the values now come from Meta.
 type SendResult struct {
-	WhatsappMessageID string                 // Twilio Message SID (SM.../MM...)
-	Response          map[string]interface{} // raw Twilio response (for logging)
+	WhatsappMessageID string                 // Meta message id (wamid...)
+	Response          map[string]interface{} // raw Meta response (for logging)
 	Err               error                  // non-nil on failure
 }
 
-// WhatsappService abstracts the WhatsApp provider (now Twilio). The interface
-// is unchanged from the previous Meta-based abstraction.
+// WhatsappService abstracts the WhatsApp provider (now Meta WhatsApp Cloud
+// API). The interface is unchanged from the previous Twilio-based abstraction
+// so callers (InvitationService, WebhookService) require no changes.
 type WhatsappService interface {
 	// SendInvitation sends the initial/resend invitation message. imageURL,
-	// when non-empty, is attached as media (freeform sends only).
+	// when non-empty, is sent as an image message (Meta "link" media) with
+	// the invitation text as caption; otherwise a plain text message is sent.
 	SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult
 	// SendReminder sends a reminder to an attending guest.
 	SendReminder(inv *models.Invitation) SendResult
 	// SendQR sends the QR image. mediaURL is a publicly reachable HTTPS URL
-	// that Twilio fetches (replacing Meta's upload-and-media-id model).
+	// (the existing stateless /qr endpoint) that Meta fetches as image.link.
 	SendQR(inv *models.Invitation, mediaURL string) SendResult
 	// SendText sends a plain text message (used by the webhook conversation flow).
 	SendText(inv *models.Invitation, body string) SendResult
 }
 
-type twilioWhatsappService struct {
-	cfg    *config.Config
-	client *twilio.RestClient
+type metaWhatsappService struct {
+	cfg        *config.Config
+	httpClient *http.Client
 }
 
-// NewWhatsappService returns the Twilio-backed implementation. The constructor
+// NewWhatsappService returns the Meta-backed implementation. The constructor
 // signature is unchanged so the DI wiring in main.go stays the same.
 func NewWhatsappService(cfg *config.Config) WhatsappService {
-	client := twilio.NewRestClientWithParams(twilio.ClientParams{
-		Username: cfg.TwilioAccountSID,
-		Password: cfg.TwilioAuthToken,
-	})
-	return &twilioWhatsappService{cfg: cfg, client: client}
+	return &metaWhatsappService{
+		cfg:        cfg,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
-func (s *twilioWhatsappService) SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult {
+func (s *metaWhatsappService) SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult {
 	body := fmt.Sprintf(
 		"Halo %s, Anda diundang ke acara pernikahan %s. Mohon konfirmasi kehadiran Anda.",
 		inv.GuestName, coupleName(inv),
 	)
-	// Named content variables: keys must match the template's {{...}} names.
-	// The custom invitation template uses {{guest_name}}.
-	return s.send(inv, sendOptions{
-		body:        body,
-		mediaURL:    imageURL,
-		contentSid:  s.cfg.TwilioContentSidInvitation,
-		contentVars: map[string]string{"guest_name": inv.GuestName, "couple_name": coupleName(inv)},
-	})
+	if imageURL != "" {
+		return s.sendImage(inv, imageURL, body)
+	}
+	return s.sendText(inv, body)
 }
 
-func (s *twilioWhatsappService) SendReminder(inv *models.Invitation) SendResult {
+func (s *metaWhatsappService) SendReminder(inv *models.Invitation) SendResult {
 	body := fmt.Sprintf(
 		"Halo %s, ini pengingat untuk acara pernikahan %s. Sampai jumpa!",
 		inv.GuestName, coupleName(inv),
 	)
-	return s.send(inv, sendOptions{
-		body:        body,
-		contentSid:  s.cfg.TwilioContentSidReminder,
-		contentVars: map[string]string{"1": inv.GuestName, "2": coupleName(inv)},
-	})
+	return s.sendText(inv, body)
 }
 
-func (s *twilioWhatsappService) SendQR(inv *models.Invitation, mediaURL string) SendResult {
+func (s *metaWhatsappService) SendQR(inv *models.Invitation, mediaURL string) SendResult {
 	body := fmt.Sprintf(
 		"Halo %s, berikut QR code untuk check-in di acara %s.",
 		inv.GuestName, coupleName(inv),
 	)
-	return s.send(inv, sendOptions{
-		body:        body,
-		mediaURL:    mediaURL,
-		contentSid:  s.cfg.TwilioContentSidQR,
-		contentVars: map[string]string{"1": inv.GuestName},
-	})
+	return s.sendImage(inv, mediaURL, body)
 }
 
-func (s *twilioWhatsappService) SendText(inv *models.Invitation, body string) SendResult {
-	return s.send(inv, sendOptions{body: body})
+func (s *metaWhatsappService) SendText(inv *models.Invitation, body string) SendResult {
+	return s.sendText(inv, body)
 }
 
-// sendOptions describes one outbound message.
-type sendOptions struct {
-	body        string            // freeform text (used when contentSid is empty)
-	mediaURL    string            // optional public media URL (freeform sends only)
-	contentSid  string            // optional approved Content Template SID
-	contentVars map[string]string // variables for the Content Template
+// sendText sends a freeform text message via the Meta Cloud API.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/messages/text-messages
+func (s *metaWhatsappService) sendText(inv *models.Invitation, body string) SendResult {
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                normalizeIndonesianPhone(inv.WhatsappNumber),
+		"type":              "text",
+		"text": map[string]interface{}{
+			"preview_url": false,
+			"body":        body,
+		},
+	}
+	return s.send(payload)
 }
 
-// send builds and dispatches the Twilio message, returning a normalized result.
-func (s *twilioWhatsappService) send(inv *models.Invitation, opts sendOptions) SendResult {
-	if s.cfg.TwilioAccountSID == "" || s.cfg.TwilioAuthToken == "" || s.cfg.TwilioWhatsAppNumber == "" {
-		return SendResult{Err: fmt.Errorf("twilio is not configured")}
+// sendImage sends an image message referenced by a public HTTPS link, with an
+// optional caption. https://developers.facebook.com/docs/whatsapp/cloud-api/messages/image-messages
+func (s *metaWhatsappService) sendImage(inv *models.Invitation, link, caption string) SendResult {
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                normalizeIndonesianPhone(inv.WhatsappNumber),
+		"type":              "image",
+		"image": map[string]interface{}{
+			"link":    link,
+			"caption": caption,
+		},
+	}
+	return s.send(payload)
+}
+
+// send POSTs a message payload to the Meta Cloud API messages endpoint and
+// returns a normalized SendResult.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
+func (s *metaWhatsappService) send(payload map[string]interface{}) SendResult {
+	if s.cfg.MetaAccessToken == "" || s.cfg.MetaPhoneNumberID == "" {
+		return SendResult{Err: fmt.Errorf("meta whatsapp is not configured")}
 	}
 
-	params := &twilioApi.CreateMessageParams{}
-	params.SetFrom(toWhatsAppAddress(s.cfg.TwilioWhatsAppNumber))
-	params.SetTo(toWhatsAppAddress(inv.WhatsappNumber))
-	if s.cfg.TwilioStatusCallbackURL != "" {
-		params.SetStatusCallback(s.cfg.TwilioStatusCallbackURL)
-	}
-
-	if opts.contentSid != "" {
-		// Approved template path (production business-initiated messages).
-		params.SetContentSid(opts.contentSid)
-		if len(opts.contentVars) > 0 {
-			if vars, err := json.Marshal(opts.contentVars); err == nil {
-				params.SetContentVariables(string(vars))
-			}
-		}
-	} else {
-		// Freeform path (Twilio sandbox / open 24h session window).
-		params.SetBody(opts.body)
-		if opts.mediaURL != "" {
-			params.SetMediaUrl([]string{opts.mediaURL})
-		}
-	}
-
-	resp, err := s.client.Api.CreateMessage(params)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return SendResult{Err: err}
 	}
 
-	res := SendResult{Response: twilioResponseMap(resp)}
-	if resp.Sid != nil {
-		res.WhatsappMessageID = *resp.Sid
+	url := fmt.Sprintf("https://graph.facebook.com/%s/%s/messages", s.cfg.MetaAPIVersion, s.cfg.MetaPhoneNumberID)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return SendResult{Err: err}
 	}
-	// Twilio may accept the request but report a message-level error code.
-	if resp.ErrorCode != nil && *resp.ErrorCode != 0 {
-		msg := ""
-		if resp.ErrorMessage != nil {
-			msg = *resp.ErrorMessage
+	req.Header.Set("Authorization", "Bearer "+s.cfg.MetaAccessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return SendResult{Err: err}
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return SendResult{Err: err}
+	}
+
+	var parsed map[string]interface{}
+	_ = json.Unmarshal(respBody, &parsed)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return SendResult{Response: parsed, Err: fmt.Errorf("meta error (%d): %s", resp.StatusCode, metaErrorMessage(parsed, respBody))}
+	}
+
+	return SendResult{
+		WhatsappMessageID: metaMessageID(parsed),
+		Response:          parsed,
+	}
+}
+
+// metaMessageID extracts messages[0].id from a successful Meta response.
+func metaMessageID(resp map[string]interface{}) string {
+	messages, ok := resp["messages"].([]interface{})
+	if !ok || len(messages) == 0 {
+		return ""
+	}
+	first, ok := messages[0].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	id, _ := first["id"].(string)
+	return id
+}
+
+// metaErrorMessage extracts error.message from a Meta error response, falling
+// back to the raw body when the shape is unexpected.
+func metaErrorMessage(resp map[string]interface{}, rawBody []byte) string {
+	if errObj, ok := resp["error"].(map[string]interface{}); ok {
+		if msg, ok := errObj["message"].(string); ok && msg != "" {
+			return msg
 		}
-		res.Err = fmt.Errorf("twilio error %d: %s", *resp.ErrorCode, msg)
 	}
-	return res
+	return string(rawBody)
 }
 
-// twilioResponseMap flattens the useful Twilio response fields for logging.
-func twilioResponseMap(m *twilioApi.ApiV2010Message) map[string]interface{} {
-	out := map[string]interface{}{"provider": "twilio"}
-	if m == nil {
-		return out
-	}
-	if m.Sid != nil {
-		out["sid"] = *m.Sid
-	}
-	if m.Status != nil {
-		out["status"] = *m.Status
-	}
-	if m.ErrorCode != nil {
-		out["error_code"] = *m.ErrorCode
-	}
-	if m.ErrorMessage != nil {
-		out["error_message"] = *m.ErrorMessage
-	}
-	if m.DateSent != nil {
-		out["date_sent"] = *m.DateSent
-	}
-	return out
-}
-
-// toWhatsAppAddress normalizes a phone number into Twilio's "whatsapp:+E164" form.
-func toWhatsAppAddress(number string) string {
+// normalizeIndonesianPhone converts a stored WhatsApp number into the digits-
+// only E.164 format Meta expects (country code + number, no leading "+", no
+// leading zero). Example: "08123456789" -> "628123456789".
+func normalizeIndonesianPhone(number string) string {
 	n := strings.TrimSpace(number)
-	if n == "" {
-		return n
+	n = strings.TrimPrefix(n, "whatsapp:")
+	n = strings.TrimPrefix(n, "+")
+	n = strings.ReplaceAll(n, "-", "")
+	n = strings.ReplaceAll(n, " ", "")
+	if strings.HasPrefix(n, "0") {
+		n = "62" + n[1:]
 	}
-	if strings.HasPrefix(n, "whatsapp:") {
-		return n
-	}
-	if !strings.HasPrefix(n, "+") {
-		n = "+" + n
-	}
-	return "whatsapp:" + n
+	return n
 }
 
 func coupleName(inv *models.Invitation) string {

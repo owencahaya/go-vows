@@ -11,8 +11,8 @@ import (
 	"projectvows/internal/repositories"
 )
 
-// sendDelay is paced between successive outbound Twilio sends in a batch to
-// avoid bursting past Twilio's per-second rate limit.
+// sendDelay is paced between successive outbound WhatsApp sends in a batch to
+// avoid bursting past the provider's per-second rate limit.
 const sendDelay = 1 * time.Second
 
 type InvitationService struct {
@@ -45,7 +45,7 @@ func (s *InvitationService) GetByID(id uint64) (*models.Invitation, error) {
 }
 
 // QRImageByToken renders the QR PNG for the invitation identified by qrToken.
-// This backs the public /qr endpoint that Twilio fetches as message media.
+// This backs the public /qr endpoint that Meta fetches as message media.
 func (s *InvitationService) QRImageByToken(qrToken string) ([]byte, error) {
 	inv, err := s.invRepo.FindByQRToken(qrToken)
 	if err != nil {
@@ -163,7 +163,7 @@ func (s *InvitationService) ResendQR(tag string, ids []uint64) (*dto.BatchSummar
 
 // processQR generates a QR in memory and sends it immediately for one
 // invitation. No QR image or QR metadata is stored: the PNG is generated to
-// validate encoding (and served on demand by the /qr endpoint that Twilio
+// validate encoding (and served on demand by the /qr endpoint that Meta
 // fetches), then discarded once this function returns.
 func (s *InvitationService) processQR(inv *models.Invitation, summary *dto.BatchSummary, msgType string) {
 	// Generate in memory to validate; the bytes are intentionally discarded.
@@ -172,7 +172,7 @@ func (s *InvitationService) processQR(inv *models.Invitation, summary *dto.Batch
 		return
 	}
 
-	// Send using the public on-demand URL (Twilio fetches it as media).
+	// Send using the public on-demand URL (Meta fetches it as image.link media).
 	res := s.whatsapp.SendQR(inv, s.qr.ImageURL(inv.QRCodeToken))
 	s.logSend(inv, msgType, res)
 	s.appendResult(summary, inv.ID, res.Err)

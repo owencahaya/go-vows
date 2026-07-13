@@ -19,8 +19,8 @@ func (r *WhatsappLogRepository) Create(log *models.WhatsappLog) error {
 }
 
 // UpdateStatusByMessageID updates the status of the most recent outbound log
-// matching the given provider message id (Twilio Message SID). Used by the
-// Twilio status callback. It is a no-op (nil error) when no log matches.
+// matching the given provider message id (Meta wamid). Used by the Meta
+// webhook status update. It is a no-op (nil error) when no log matches.
 func (r *WhatsappLogRepository) UpdateStatusByMessageID(messageID, status string) error {
 	return r.db.Model(&models.WhatsappLog{}).
 		Where("whatsapp_message_id = ?", messageID).

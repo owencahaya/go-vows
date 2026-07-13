@@ -138,7 +138,7 @@ func (h *InvitationHandler) ResendQR(c *gin.Context) {
 }
 
 // GET /qr/:qr_code_token
-// Serves the QR PNG publicly so Twilio can fetch it as message media.
+// Serves the QR PNG publicly so Meta can fetch it as image.link message media.
 // Accepts an optional ".png" suffix on the token for a friendly URL/extension.
 func (h *InvitationHandler) QRImage(c *gin.Context) {
 	token := strings.TrimSuffix(c.Param("qr_code_token"), ".png")

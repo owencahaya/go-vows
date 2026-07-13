@@ -17,7 +17,7 @@ type QRService interface {
 	// CheckinURL builds the URL that the QR encodes for a given token.
 	CheckinURL(qrToken string) string
 	// ImageURL builds the public URL where the QR PNG is served on demand.
-	// Twilio fetches this as message media; nothing is stored server-side.
+	// Meta fetches this as image.link message media; nothing is stored server-side.
 	ImageURL(qrToken string) string
 }
 

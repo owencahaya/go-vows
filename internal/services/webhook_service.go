@@ -1,11 +1,9 @@
 package services
 
 import (
-	"net/url"
-	"strings"
+	"encoding/json"
 	"time"
 
-	twilioClient "github.com/twilio/twilio-go/client"
 	"gorm.io/datatypes"
 
 	"projectvows/internal/config"
@@ -13,17 +11,16 @@ import (
 	"projectvows/internal/repositories"
 )
 
-// WebhookService handles inbound Twilio WhatsApp webhooks: delivery/status
-// callbacks and inbound guest messages. Twilio posts application/x-www-form-
-// urlencoded payloads and authenticates them with an X-Twilio-Signature header
-// (there is no Meta-style GET verification handshake).
+// WebhookService handles inbound Meta WhatsApp Cloud API webhooks: the GET
+// subscription verification handshake, and POST payloads carrying inbound
+// guest messages and delivery/status updates.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks
 type WebhookService struct {
-	cfg       *config.Config
-	invRepo   *repositories.InvitationRepository
-	logRepo   *repositories.WhatsappLogRepository
-	whatsapp  WhatsappService
-	invSvc    *InvitationService
-	validator twilioClient.RequestValidator
+	cfg      *config.Config
+	invRepo  *repositories.InvitationRepository
+	logRepo  *repositories.WhatsappLogRepository
+	whatsapp WhatsappService
+	invSvc   *InvitationService
 }
 
 func NewWebhookService(
@@ -34,87 +31,115 @@ func NewWebhookService(
 	invSvc *InvitationService,
 ) *WebhookService {
 	return &WebhookService{
-		cfg:       cfg,
-		invRepo:   invRepo,
-		logRepo:   logRepo,
-		whatsapp:  whatsapp,
-		invSvc:    invSvc,
-		validator: twilioClient.NewRequestValidator(cfg.TwilioAuthToken),
+		cfg:      cfg,
+		invRepo:  invRepo,
+		logRepo:  logRepo,
+		whatsapp: whatsapp,
+		invSvc:   invSvc,
 	}
 }
 
-// ValidateSignature verifies the X-Twilio-Signature header for a POST webhook.
-// When no auth token is configured (e.g. local dev / sandbox), validation is
-// skipped and the request is accepted.
-func (s *WebhookService) ValidateSignature(fullURL string, form url.Values, signature string) bool {
-	if s.cfg.TwilioAuthToken == "" {
-		return true
+// VerifyToken implements the Meta webhook subscription handshake:
+// GET /api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=...&hub.challenge=...
+// Returns the challenge string and true when mode is "subscribe" and the
+// token matches META_VERIFY_TOKEN.
+func (s *WebhookService) VerifyToken(mode, token, challenge string) (string, bool) {
+	if mode == "subscribe" && s.cfg.MetaVerifyToken != "" && token == s.cfg.MetaVerifyToken {
+		return challenge, true
 	}
-	params := make(map[string]string, len(form))
-	for k := range form {
-		params[k] = form.Get(k)
-	}
-	return s.validator.Validate(fullURL, params, signature)
+	return "", false
 }
 
-// HandleTwilioCallback routes a parsed Twilio webhook payload. A payload with a
-// MessageStatus field is a delivery/status callback; otherwise it is treated as
-// an inbound message from a guest.
-func (s *WebhookService) HandleTwilioCallback(form url.Values) error {
-	if status := form.Get("MessageStatus"); status != "" {
-		return s.handleStatusCallback(form.Get("MessageSid"), status)
-	}
-	return s.handleInboundMessage(form)
+// metaWebhookPayload mirrors the Meta WhatsApp Cloud API webhook shape:
+// entry[].changes[].value.{messages[],statuses[]}.
+type metaWebhookPayload struct {
+	Entry []struct {
+		Changes []struct {
+			Value struct {
+				Messages []metaInboundMessage `json:"messages"`
+				Statuses []metaStatusUpdate   `json:"statuses"`
+			} `json:"value"`
+		} `json:"changes"`
+	} `json:"entry"`
 }
 
-// handleStatusCallback maps Twilio's message status onto our whatsapp_logs
-// status column for the matching outbound log.
-func (s *WebhookService) handleStatusCallback(messageSid, twilioStatus string) error {
-	if messageSid == "" {
+type metaInboundMessage struct {
+	From string `json:"from"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Text struct {
+		Body string `json:"body"`
+	} `json:"text"`
+}
+
+type metaStatusUpdate struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+// HandleInbound parses a raw Meta webhook POST body and processes every
+// inbound message and status update it contains.
+func (s *WebhookService) HandleInbound(rawPayload []byte) error {
+	var payload metaWebhookPayload
+	if err := json.Unmarshal(rawPayload, &payload); err != nil {
+		return err
+	}
+
+	for _, entry := range payload.Entry {
+		for _, change := range entry.Changes {
+			for _, msg := range change.Value.Messages {
+				if err := s.handleInboundMessage(msg, rawPayload); err != nil {
+					return err
+				}
+			}
+			for _, status := range change.Value.Statuses {
+				if err := s.handleStatusUpdate(status); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// handleInboundMessage resolves the sender and records an inbound log. The
+// RSVP conversation state machine (UpdateRSVPStatus etc.) can be driven from here.
+func (s *WebhookService) handleInboundMessage(msg metaInboundMessage, rawPayload []byte) error {
+	if msg.From == "" {
 		return nil
 	}
-	return s.logRepo.UpdateStatusByMessageID(messageSid, mapTwilioStatus(twilioStatus))
-}
-
-// handleInboundMessage resolves the sender and records an inbound log. The RSVP
-// conversation state machine (UpdateRSVPStatus etc.) can be driven from here.
-func (s *WebhookService) handleInboundMessage(form url.Values) error {
-	from := strings.TrimPrefix(form.Get("From"), "whatsapp:")
-	if from == "" {
-		return nil
-	}
-	inv, err := s.invRepo.FindByWhatsappNumber(from)
+	inv, err := s.invRepo.FindByWhatsappNumber(msg.From)
 	if err != nil {
 		// Unknown sender: nothing to attach the log to (invitation_id is a FK).
 		return nil
 	}
 
 	var messageID *string
-	if sid := form.Get("MessageSid"); sid != "" {
-		messageID = &sid
+	if msg.ID != "" {
+		messageID = &msg.ID
 	}
-	payload := toJSON(formToMap(form))
-	return s.logInbound(inv.ID, models.MsgTypeOther, payload, messageID)
+	return s.logInbound(inv.ID, models.MsgTypeOther, datatypes.JSON(rawPayload), messageID)
 }
 
-// mapTwilioStatus translates a Twilio message status to our log status enum.
-func mapTwilioStatus(twilioStatus string) string {
-	switch strings.ToLower(twilioStatus) {
-	case "failed", "undelivered":
+// handleStatusUpdate maps Meta's message status onto our whatsapp_logs status
+// column for the matching outbound log.
+func (s *WebhookService) handleStatusUpdate(status metaStatusUpdate) error {
+	if status.ID == "" {
+		return nil
+	}
+	return s.logRepo.UpdateStatusByMessageID(status.ID, mapMetaStatus(status.Status))
+}
+
+// mapMetaStatus translates a Meta message status to our log status enum.
+func mapMetaStatus(metaStatus string) string {
+	switch metaStatus {
+	case "failed":
 		return models.WALogFailed
 	case "sent", "delivered", "read":
 		return models.WALogSent
-	default: // queued, accepted, scheduled, sending, ...
+	default:
 		return models.WALogPending
 	}
-}
-
-func formToMap(form url.Values) map[string]string {
-	m := make(map[string]string, len(form))
-	for k := range form {
-		m[k] = form.Get(k)
-	}
-	return m
 }
 
 // logInbound writes a generic inbound whatsapp_logs row.
