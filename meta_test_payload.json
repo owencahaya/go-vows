@@ -1,0 +1,24 @@
+{
+  "messaging_product": "whatsapp",
+  "recipient_type": "individual",
+  "to": "6282286829922",
+  "type": "template",
+  "template": {
+    "name": "as_invitation",
+    "language": { "code": "id" },
+    "components": [
+      {
+        "type": "header",
+        "parameters": [
+          { "type": "image", "image": { "link": "https://www.w3.org/People/mimasa/test/imgformat/img/w3c_home.jpg" } }
+        ]
+      },
+      {
+        "type": "body",
+        "parameters": [
+          { "type": "text", "parameter_name": "guest_name", "text": "Owen" }
+        ]
+      }
+    ]
+  }
+}

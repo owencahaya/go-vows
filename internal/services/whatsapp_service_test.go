@@ -50,3 +50,37 @@ func TestSendRequiresConfig(t *testing.T) {
 		t.Error("SendQR with empty config should return an error")
 	}
 }
+
+// When an invitation template is configured but no image_url is supplied, the
+// send must fail fast with a clear error instead of calling Meta with a
+// malformed request (the template's header component requires an image).
+func TestSendInvitationTemplateRequiresImage(t *testing.T) {
+	svc := NewWhatsappService(&config.Config{
+		MetaAccessToken:            "token",
+		MetaPhoneNumberID:          "123",
+		MetaTemplateNameInvitation: "as_invitation",
+		MetaTemplateLanguage:       "id",
+	})
+	inv := &models.Invitation{WhatsappNumber: "+6281234567890", GuestName: "Owen"}
+
+	res := svc.SendInvitation(inv, models.MsgTypeInitialInvitation, "")
+	if res.Err == nil {
+		t.Error("SendInvitation with a configured template and no image_url should return an error")
+	}
+}
+
+// When an invitation template is configured but no language is set, the send
+// must fail fast rather than send a template request with an empty language.
+func TestSendInvitationTemplateRequiresLanguage(t *testing.T) {
+	svc := NewWhatsappService(&config.Config{
+		MetaAccessToken:            "token",
+		MetaPhoneNumberID:          "123",
+		MetaTemplateNameInvitation: "as_invitation",
+	})
+	inv := &models.Invitation{WhatsappNumber: "+6281234567890", GuestName: "Owen"}
+
+	res := svc.SendInvitation(inv, models.MsgTypeInitialInvitation, "https://example.com/card.jpg")
+	if res.Err == nil {
+		t.Error("SendInvitation with a configured template and no language should return an error")
+	}
+}

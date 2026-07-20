@@ -23,6 +23,11 @@ type Config struct {
 	MetaPhoneNumberID string
 	MetaAPIVersion    string
 	MetaVerifyToken   string // webhook GET verification (hub.verify_token)
+
+	// Optional approved template for the initial invitation message. When
+	// empty, the invitation is sent as freeform text/image instead.
+	MetaTemplateNameInvitation string
+	MetaTemplateLanguage       string // e.g. "id"
 }
 
 // Load reads configuration from environment variables, applying sensible
@@ -42,6 +47,9 @@ func Load() *Config {
 		MetaPhoneNumberID: getEnv("META_PHONE_NUMBER_ID", ""),
 		MetaAPIVersion:    getEnv("META_API_VERSION", "v23.0"),
 		MetaVerifyToken:   getEnv("META_VERIFY_TOKEN", ""),
+
+		MetaTemplateNameInvitation: getEnv("META_TEMPLATE_NAME_INVITATION", ""),
+		MetaTemplateLanguage:       getEnv("META_TEMPLATE_LANGUAGE", ""),
 	}
 }
 

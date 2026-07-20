@@ -26,9 +26,15 @@ type SendResult struct {
 // API). The interface is unchanged from the previous Twilio-based abstraction
 // so callers (InvitationService, WebhookService) require no changes.
 type WhatsappService interface {
-	// SendInvitation sends the initial/resend invitation message. imageURL,
-	// when non-empty, is sent as an image message (Meta "link" media) with
-	// the invitation text as caption; otherwise a plain text message is sent.
+	// SendInvitation sends the initial/resend invitation message.
+	//
+	// When META_TEMPLATE_NAME_INVITATION is configured, it sends that approved
+	// template with imageURL as the required header image and the guest name
+	// as the "guest_name" named body parameter (imageURL is then required —
+	// the template's header component is IMAGE type). When no template is
+	// configured, imageURL is optional: sent as an image message (Meta "link"
+	// media) with the invitation text as caption, or a plain text message
+	// when empty.
 	SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult
 	// SendReminder sends a reminder to an attending guest.
 	SendReminder(inv *models.Invitation) SendResult
@@ -54,6 +60,16 @@ func NewWhatsappService(cfg *config.Config) WhatsappService {
 }
 
 func (s *metaWhatsappService) SendInvitation(inv *models.Invitation, messageType, imageURL string) SendResult {
+	if s.cfg.MetaTemplateNameInvitation != "" {
+		if s.cfg.MetaTemplateLanguage == "" {
+			return SendResult{Err: fmt.Errorf("META_TEMPLATE_LANGUAGE is not configured for template %q", s.cfg.MetaTemplateNameInvitation)}
+		}
+		if imageURL == "" {
+			return SendResult{Err: fmt.Errorf("template %q requires an image_url (header image)", s.cfg.MetaTemplateNameInvitation)}
+		}
+		return s.sendInvitationTemplate(inv, imageURL)
+	}
+
 	body := fmt.Sprintf(
 		"Halo %s, Anda diundang ke acara pernikahan %s. Mohon konfirmasi kehadiran Anda.",
 		inv.GuestName, coupleName(inv),
@@ -111,6 +127,37 @@ func (s *metaWhatsappService) sendImage(inv *models.Invitation, link, caption st
 		"image": map[string]interface{}{
 			"link":    link,
 			"caption": caption,
+		},
+	}
+	return s.send(payload)
+}
+
+// sendInvitationTemplate sends the configured invitation template with an
+// IMAGE header and a "guest_name" named body parameter.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-message-templates
+func (s *metaWhatsappService) sendInvitationTemplate(inv *models.Invitation, headerImageURL string) SendResult {
+	payload := map[string]interface{}{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                normalizeIndonesianPhone(inv.WhatsappNumber),
+		"type":              "template",
+		"template": map[string]interface{}{
+			"name":     s.cfg.MetaTemplateNameInvitation,
+			"language": map[string]interface{}{"code": s.cfg.MetaTemplateLanguage},
+			"components": []map[string]interface{}{
+				{
+					"type": "header",
+					"parameters": []map[string]interface{}{
+						{"type": "image", "image": map[string]interface{}{"link": headerImageURL}},
+					},
+				},
+				{
+					"type": "body",
+					"parameters": []map[string]interface{}{
+						{"type": "text", "parameter_name": "guest_name", "text": inv.GuestName},
+					},
+				},
+			},
 		},
 	}
 	return s.send(payload)
